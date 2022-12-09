@@ -233,7 +233,7 @@ impl Listener {
                 .clone()
                 .acquire_owned()
                 .await
-                .unwrap();
+                .expect("Permit should never be closed");
 
             // Accept a new socket. This will attempt to perform error handling.
             // The `accept` method internally attempts to recover errors, so an

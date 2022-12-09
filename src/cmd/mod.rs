@@ -1,19 +1,17 @@
 mod get;
-pub use get::Get;
-
-mod publish;
-pub use publish::Publish;
-
-mod set;
-pub use set::Set;
-
-mod subscribe;
-pub use subscribe::{Subscribe, Unsubscribe};
-
 mod ping;
-pub use ping::Ping;
-
+mod publish;
+mod select;
+mod set;
+mod subscribe;
 mod unknown;
+
+pub use get::Get;
+pub use ping::Ping;
+pub use publish::Publish;
+pub use select::Select;
+pub use set::Set;
+pub use subscribe::{Subscribe, Unsubscribe};
 pub use unknown::Unknown;
 
 use crate::{Connection, Db, Frame, Parse, ParseError, Shutdown};
@@ -63,6 +61,7 @@ impl Command {
             "subscribe" => Command::Subscribe(Subscribe::parse_frames(&mut parse)?),
             "unsubscribe" => Command::Unsubscribe(Unsubscribe::parse_frames(&mut parse)?),
             "ping" => Command::Ping(Ping::parse_frames(&mut parse)?),
+            "select" => Command::Ping(Ping::parse_frames(&mut parse)?),
             _ => {
                 // The command is not recognized and an Unknown command is
                 // returned.
