@@ -1,300 +1,180 @@
 //! Provides a type representing a Redis protocol frame as well as utilities for
 //! parsing frames from a byte array.
 
-use bytes::{Buf, Bytes};
-use std::convert::TryInto;
 use std::fmt;
-use std::io::Cursor;
-use std::num::TryFromIntError;
-use std::string::FromUtf8Error;
 
-/// A frame in the Redis protocol.
+use atoi::atoi;
+
 #[derive(Clone, Debug)]
 pub enum Frame {
-    Simple(String),
-    Error(String),
-    Integer(u64),
-    Bulk(Bytes),
+    Simple(Vec<u8>),
+    Error(Vec<u8>),
+    Integer(i64),
+    Bulk(Vec<u8>),
     Null,
     Array(Vec<Frame>),
 }
 
-#[derive(Debug)]
-pub enum Error {
-    /// Not enough data is available to parse a message
-    Incomplete,
-
-    /// Invalid message encoding
-    Other(crate::Error),
+#[derive(Clone, Debug)]
+pub enum IntermediateFrame<'a> {
+    Simple(&'a [u8]),
+    Error(&'a [u8]),
+    Integer(&'a [u8]),
+    Bulk(&'a [u8]),
+    Null,
+    Array(&'a [u8]),
 }
 
-impl Frame {
-    /// Returns an empty array
-    pub(crate) fn array() -> Frame {
-        Frame::Array(vec![])
-    }
+#[derive(Debug)]
+pub enum FrameError {
+    Incomplete,
+    InvalidInteger,
+    BadFormat,
+}
 
-    /// Push a "bulk" frame into the array. `self` must be an Array frame.
-    ///
-    /// # Panics
-    ///
-    /// panics if `self` is not an array
-    pub(crate) fn push_bulk(&mut self, bytes: Bytes) {
-        match self {
-            Frame::Array(vec) => {
-                vec.push(Frame::Bulk(bytes));
-            }
-            _ => panic!("not an array frame"),
-        }
-    }
-
-    /// Push an "integer" frame into the array. `self` must be an Array frame.
-    ///
-    /// # Panics
-    ///
-    /// panics if `self` is not an array
-    pub(crate) fn push_int(&mut self, value: u64) {
-        match self {
-            Frame::Array(vec) => {
-                vec.push(Frame::Integer(value));
-            }
-            _ => panic!("not an array frame"),
-        }
-    }
-
-    /// Checks if an entire message can be decoded from `src`
-    pub fn check(src: &mut Cursor<&[u8]>) -> Result<(), Error> {
-        match get_u8(src)? {
+impl<'a> IntermediateFrame<'a> {
+    pub fn parse_intermediate(src: &[u8]) -> Result<(IntermediateFrame<'a>, &'a [u8]), FrameError> {
+        match peek_u8_at(src, 0)? {
             b'+' => {
-                get_line(src)?;
-                Ok(())
+                let (res, leftover) = get_bytes_until_crlf(get_bytes_from(src, 1)?)?;
+                Ok((Frame::Simple(res), leftover))
             }
             b'-' => {
-                get_line(src)?;
-                Ok(())
+                let (res, leftover) = get_bytes_until_crlf(get_bytes_from(src, 1)?)?;
+                Ok((Frame::Error(res), leftover))
             }
             b':' => {
-                let _ = get_decimal(src)?;
-                Ok(())
+                let (res, leftover) = get_bytes_until_crlf(get_bytes_from(src, 1)?)?;
+                if atoi::<i64>(res).is_none() {
+                    Err(FrameError::InvalidInteger)
+                } else {
+                    Ok((Frame::Integer(res), leftover))
+                }
             }
             b'$' => {
-                if b'-' == peek_u8(src)? {
-                    // Skip '-1\r\n'
-                    skip(src, 4)
+                // $<decimal>\r\n<string>\r\n
+                let (len, leftover) = get_decimal_until_crlf(get_bytes_from(src, 1)?)?;
+                if len < 0 {
+                    Ok((Frame::Null, leftover))
+                } else if peek_u8_at(leftover, len as usize)? == b'\r'
+                    && peek_u8_at(leftover, len as usize + 1)? == b'\n'
+                {
+                    Ok((
+                        Frame::Bulk(&leftover[0..len as usize]),
+                        get_bytes_from(src, 2)?,
+                    ))
                 } else {
-                    // Read the bulk string
-                    let len: usize = get_decimal(src)?.try_into()?;
-
-                    // skip that number of bytes + 2 (\r\n).
-                    skip(src, len + 2)
+                    Err(FrameError::BadFormat)
                 }
             }
             b'*' => {
-                let len = get_decimal(src)?;
+                let mut end_idx = 0;
+                let (mut clrf_count, mut total_leftover) =
+                    get_decimal_until_crlf(get_bytes_from(src, 1)?)?;
 
-                for _ in 0..len {
-                    Frame::check(src)?;
+                while clrf_count != 0 && total_leftover.len() != 0 {
+                    let (frame, new_leftover) = Frame::parse(total_leftover)?;
+                    total_leftover = new_leftover;
+                    end_idx += frame.len();
                 }
 
-                Ok(())
-            }
-            actual => Err(format!("protocol error; invalid frame type byte `{}`", actual).into()),
-        }
-    }
-
-    /// The message has already been validated with `check`.
-    pub fn parse(src: &mut Cursor<&[u8]>) -> Result<Frame, Error> {
-        match get_u8(src)? {
-            b'+' => {
-                // Read the line and convert it to `Vec<u8>`
-                let line = get_line(src)?.to_vec();
-
-                // Convert the line to a String
-                let string = String::from_utf8(line)?;
-
-                Ok(Frame::Simple(string))
-            }
-            b'-' => {
-                // Read the line and convert it to `Vec<u8>`
-                let line = get_line(src)?.to_vec();
-
-                // Convert the line to a String
-                let string = String::from_utf8(line)?;
-
-                Ok(Frame::Error(string))
-            }
-            b':' => {
-                let len = get_decimal(src)?;
-                Ok(Frame::Integer(len))
-            }
-            b'$' => {
-                if b'-' == peek_u8(src)? {
-                    let line = get_line(src)?;
-
-                    if line != b"-1" {
-                        return Err("protocol error; invalid frame format".into());
-                    }
-
-                    Ok(Frame::Null)
+                if peek_u8_at(total_leftover, 0)? == b'\r'
+                    && peek_u8_at(total_leftover, 0)? == b'\r'
+                {
+                    Ok((Frame::Array(&src[1..end_idx]), total_leftover))
                 } else {
-                    // Read the bulk string
-                    let len = get_decimal(src)?.try_into()?;
-                    let n = len + 2;
-
-                    if src.remaining() < n {
-                        return Err(Error::Incomplete);
-                    }
-
-                    let data = Bytes::copy_from_slice(&src.chunk()[..len]);
-
-                    // skip that number of bytes + 2 (\r\n).
-                    skip(src, n)?;
-
-                    Ok(Frame::Bulk(data))
+                    Err(FrameError::BadFormat)
                 }
-            }
-            b'*' => {
-                let len = get_decimal(src)?.try_into()?;
-                let mut out = Vec::with_capacity(len);
-
-                for _ in 0..len {
-                    out.push(Frame::parse(src)?);
-                }
-
-                Ok(Frame::Array(out))
             }
             _ => unimplemented!(),
         }
     }
 
-    /// Converts the frame to an "unexpected frame" error
-    pub(crate) fn to_error(&self) -> crate::Error {
-        format!("unexpected frame: {}", self).into()
-    }
-}
-
-impl PartialEq<&str> for Frame {
-    fn eq(&self, other: &&str) -> bool {
+    pub fn len(&self) -> usize {
         match self {
-            Frame::Simple(s) => s.eq(other),
-            Frame::Bulk(s) => s.eq(other),
-            _ => false,
+            Frame::Simple(b) => b.len(),
+            Frame::Error(b) => b.len(),
+            Frame::Integer(b) => b.len(),
+            Frame::Bulk(b) => b.len(),
+            Frame::Null => 4,
+            Frame::Array(b) => b.len(),
+        }
+    }
+
+    pub fn to_frame(self) -> Frame {
+        match self {
+            IntermediateFrame::Simple(b) => Frame::Simple(b.to_owned()),
+            IntermediateFrame::Error(b) => Frame::Error(b.to_owned()),
+            IntermediateFrame::Integer(res) => Frame::Integer(
+                atoi::<i64>(res).expect("We already verified that it is a valid integer"),
+            ),
+            IntermediateFrame::Bulk(b) => Frame::Bulk(b.to_owned()),
+            IntermediateFrame::Null => Frame::Null,
+            IntermediateFrame::Array(b) => todo!(),
         }
     }
 }
 
-impl fmt::Display for Frame {
+impl<'a> fmt::Display for IntermediateFrame<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        use std::str;
-
         match self {
-            Frame::Simple(response) => response.fmt(fmt),
-            Frame::Error(msg) => write!(fmt, "error: {}", msg),
-            Frame::Integer(num) => num.fmt(fmt),
-            Frame::Bulk(msg) => match str::from_utf8(msg) {
-                Ok(string) => string.fmt(fmt),
-                Err(_) => write!(fmt, "{:?}", msg),
-            },
-            Frame::Null => "(nil)".fmt(fmt),
-            Frame::Array(parts) => {
-                for (i, part) in parts.iter().enumerate() {
-                    if i > 0 {
-                        write!(fmt, " ")?;
-                        part.fmt(fmt)?;
-                    }
-                }
+            Frame::Simple(msg) => write!(fmt, "simple:{:?}", msg),
+            Frame::Error(msg) => write!(fmt, "error:{:?}", msg),
+            Frame::Integer(msg) => write!(fmt, "integer:{:?}", msg),
+            Frame::Bulk(msg) => write!(fmt, "bulk{:?}", msg),
+            Frame::Null => write!(fmt, "nil"),
+            Frame::Array(msg) => write!(fmt, "{:?}", msg),
+        }
+    }
+}
 
-                Ok(())
+fn peek_u8_at(src: &[u8], at: usize) -> Result<u8, FrameError> {
+    if at < src.len() {
+        return Ok(src[at]);
+    } else {
+        return Err(FrameError::Incomplete);
+    }
+}
+
+fn get_bytes_from(src: &[u8], at: usize) -> Result<&[u8], FrameError> {
+    if at < src.len() {
+        Ok(&src[at..])
+    } else {
+        Err(FrameError::Incomplete)
+    }
+}
+
+/// Parses something like :<decimal>\r\n
+fn get_decimal_until_crlf(src: &[u8]) -> Result<(i64, &[u8]), FrameError> {
+    let (str, leftover) = get_bytes_until_crlf(src)?;
+    if str.len() > 3 {
+        let res = atoi::<i64>(&str[1..str.len() - 2]).ok_or(FrameError::InvalidInteger)?;
+        Ok((res, leftover))
+    } else {
+        Err(FrameError::Incomplete)
+    }
+}
+
+/// Returns bytes until the first CRLF
+fn get_bytes_until_crlf<'a>(src: &'a [u8]) -> Result<(&'a [u8], &'a [u8]), FrameError> {
+    if src.len() >= 2 {
+        for i in 0..src.len() - 1 {
+            if src[i] == b'\r' && src[i + 1] == b'\n' {
+                return Ok((&src[..i], &src[i..]));
             }
         }
     }
+    Err(FrameError::Incomplete)
 }
 
-fn peek_u8(src: &mut Cursor<&[u8]>) -> Result<u8, Error> {
-    if !src.has_remaining() {
-        return Err(Error::Incomplete);
-    }
+impl std::error::Error for FrameError {}
 
-    Ok(src.chunk()[0])
-}
-
-fn get_u8(src: &mut Cursor<&[u8]>) -> Result<u8, Error> {
-    if !src.has_remaining() {
-        return Err(Error::Incomplete);
-    }
-
-    Ok(src.get_u8())
-}
-
-fn skip(src: &mut Cursor<&[u8]>, n: usize) -> Result<(), Error> {
-    if src.remaining() < n {
-        return Err(Error::Incomplete);
-    }
-
-    src.advance(n);
-    Ok(())
-}
-
-/// Read a new-line terminated decimal
-fn get_decimal(src: &mut Cursor<&[u8]>) -> Result<u64, Error> {
-    use atoi::atoi;
-
-    let line = get_line(src)?;
-
-    atoi::<u64>(line).ok_or_else(|| "protocol error; invalid frame format".into())
-}
-
-/// Find a line
-fn get_line<'a>(src: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], Error> {
-    // Scan the bytes directly
-    let start = src.position() as usize;
-    // Scan to the second to last byte
-    let end = src.get_ref().len() - 1;
-
-    for i in start..end {
-        if src.get_ref()[i] == b'\r' && src.get_ref()[i + 1] == b'\n' {
-            // We found a line, update the position to be *after* the \n
-            src.set_position((i + 2) as u64);
-
-            // Return the line
-            return Ok(&src.get_ref()[start..i]);
-        }
-    }
-
-    Err(Error::Incomplete)
-}
-
-impl From<String> for Error {
-    fn from(src: String) -> Error {
-        Error::Other(src.into())
-    }
-}
-
-impl From<&str> for Error {
-    fn from(src: &str) -> Error {
-        src.to_string().into()
-    }
-}
-
-impl From<FromUtf8Error> for Error {
-    fn from(_src: FromUtf8Error) -> Error {
-        "protocol error; invalid frame format".into()
-    }
-}
-
-impl From<TryFromIntError> for Error {
-    fn from(_src: TryFromIntError) -> Error {
-        "protocol error; invalid frame format".into()
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl fmt::Display for Error {
+impl fmt::Display for FrameError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::Incomplete => "stream ended early".fmt(fmt),
-            Error::Other(err) => err.fmt(fmt),
+            FrameError::Incomplete => "frame requires more bytes".fmt(fmt),
+            FrameError::InvalidInteger => "frame contains invalid integer".fmt(fmt),
+            FrameError::BadFormat => "frame contains bad format".fmt(fmt),
         }
     }
 }
