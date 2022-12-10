@@ -108,47 +108,8 @@ impl Connection {
     /// syscalls. However, it is fine to call these functions on a *buffered*
     /// write stream. The data will be written to the buffer. Once the buffer is
     /// full, it is flushed to the underlying socket.
-    pub async fn write_frame<'a>(&mut self, frame: Frame<'a>) -> io::Result<()> {
-        match frame {
-            Frame::Simple(val) => {
-                self.stream.write_u8(b'+').await?;
-                self.stream.write_all(val).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Error(val) => {
-                self.stream.write_u8(b'-').await?;
-                self.stream.write_all(val).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            Frame::Integer(val) => {
-                self.stream.write_u8(b':').await?;
-                self.write_decimal(
-                    atoi::atoi::<i64>(val).expect("We already checked that the integer is valid"),
-                )
-                .await?;
-            }
-            Frame::Null => {
-                self.stream.write_all(b"$-1\r\n").await?;
-            }
-            Frame::Bulk(val) => {
-                let len = val.len();
-                self.stream.write_u8(b'$').await?;
-                self.write_decimal(len as i64).await?;
-                self.stream.write_all(val).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-            // Encoding an `Array` from within a value cannot be done using a
-            // recursive strategy. In general, async fns do not support
-            // recursion. Mini-redis has not needed to encode nested arrays yet,
-            // so for now it is skipped.
-            Frame::Array(val) => {
-                let len = val.len();
-                self.stream.write_u8(b'*').await?;
-                self.write_decimal(len as i64).await?;
-                self.stream.write_all(val).await?;
-                self.stream.write_all(b"\r\n").await?;
-            }
-        }
+    pub async fn write_frame(&mut self, frame: &Frame) -> io::Result<()> {
+        self.stream.write_all(&frame.as_bytes());
 
         // Ensure the encoded frame is written to the socket. The calls above
         // are to the buffered stream and writes. Calling `flush` writes the

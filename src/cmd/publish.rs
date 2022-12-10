@@ -1,4 +1,4 @@
-use crate::{Connection, Db, Frame, Parse};
+use crate::{frame::FrameArray, Connection, Db, Frame, Parse};
 
 use bytes::Bytes;
 
@@ -78,7 +78,7 @@ impl Publish {
 
         // The number of subscribers is returned as the response to the publish
         // request.
-        let response = Frame::Integer(num_subscribers as u64);
+        let response = Frame::Integer(num_subscribers as i64);
 
         // Write the frame to the client.
         dst.write_frame(&response).await?;
@@ -91,11 +91,11 @@ impl Publish {
     /// This is called by the client when encoding a `Publish` command to send
     /// to the server.
     pub(crate) fn into_frame(self) -> Frame {
-        let mut frame = Frame::array();
-        frame.push_bulk(Bytes::from("publish".as_bytes()));
+        let mut frame = FrameArray::with_capacity(3);
+        frame.push_bulk(Bytes::from_static(b"publish"));
         frame.push_bulk(Bytes::from(self.channel.into_bytes()));
         frame.push_bulk(self.message);
 
-        frame
+        Frame::Array(frame)
     }
 }

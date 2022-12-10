@@ -1,4 +1,4 @@
-use crate::{Connection, Db, Frame, Parse};
+use crate::{frame::FrameArray, Connection, Db, Frame, Parse};
 
 use bytes::Bytes;
 use tracing::{debug, instrument};
@@ -85,9 +85,9 @@ impl Get {
     /// This is called by the client when encoding a `Get` command to send to
     /// the server.
     pub(crate) fn into_frame(self) -> Frame {
-        let mut frame = Frame::array();
-        frame.push_bulk(Bytes::from("get".as_bytes()));
+        let mut frame = FrameArray::with_capacity(2);
+        frame.push_bulk(Bytes::from_static(b"get"));
         frame.push_bulk(Bytes::from(self.key.into_bytes()));
-        frame
+        Frame::Array(frame)
     }
 }

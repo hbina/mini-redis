@@ -1,4 +1,4 @@
-use crate::{Connection, Frame, Parse, ParseError};
+use crate::{frame::FrameArray, Connection, Frame, Parse, ParseError};
 use bytes::Bytes;
 use tracing::instrument;
 
@@ -54,7 +54,7 @@ impl Ping {
     #[instrument(skip(self, dst))]
     pub(crate) async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
         let response = match self.msg {
-            None => Frame::Simple("PONG".to_string()),
+            None => Frame::Simple(Bytes::from_static(b"PONG")),
             Some(msg) => Frame::Bulk(Bytes::from(msg)),
         };
 
@@ -69,11 +69,15 @@ impl Ping {
     /// This is called by the client when encoding a `Ping` command to send
     /// to the server.
     pub(crate) fn into_frame(self) -> Frame {
-        let mut frame = Frame::array();
-        frame.push_bulk(Bytes::from("ping".as_bytes()));
         if let Some(msg) = self.msg {
+            let mut frame = FrameArray::with_capacity(2);
+            frame.push_bulk(Bytes::from_static(b"ping"));
             frame.push_bulk(Bytes::from(msg));
+            Frame::Array(frame)
+        } else {
+            let mut frame = FrameArray::with_capacity(1);
+            frame.push_bulk(Bytes::from_static(b"ping"));
+            Frame::Array(frame)
         }
-        frame
     }
 }

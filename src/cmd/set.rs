@@ -1,4 +1,5 @@
 use crate::cmd::{Parse, ParseError};
+use crate::frame::FrameArray;
 use crate::{Connection, Db, Frame};
 
 use bytes::Bytes;
@@ -96,13 +97,13 @@ impl Set {
                 // An expiration is specified in seconds. The next value is an
                 // integer.
                 let secs = parse.next_int()?;
-                expire = Some(Duration::from_secs(secs));
+                expire = Some(Duration::from_secs(secs as u64));
             }
             Ok(s) if s.to_uppercase() == "PX" => {
                 // An expiration is specified in milliseconds. The next value is
                 // an integer.
                 let ms = parse.next_int()?;
-                expire = Some(Duration::from_millis(ms));
+                expire = Some(Duration::from_millis(ms as u64));
             }
             // Currently, mini-redis does not support any of the other SET
             // options. An error here results in the connection being
@@ -130,7 +131,7 @@ impl Set {
         db.set(self.key, self.value, self.expire);
 
         // Create a success response and write it to `dst`.
-        let response = Frame::Simple("OK".to_string());
+        let response = Frame::Simple(Bytes::from_static(b"OK"));
         debug!(?response);
         dst.write_frame(&response).await?;
 
@@ -142,8 +143,8 @@ impl Set {
     /// This is called by the client when encoding a `Set` command to send to
     /// the server.
     pub(crate) fn into_frame(self) -> Frame {
-        let mut frame = Frame::array();
-        frame.push_bulk(Bytes::from("set".as_bytes()));
+        let mut frame = FrameArray::with_capacity(3);
+        frame.push_bulk(Bytes::from_static(b"set"));
         frame.push_bulk(Bytes::from(self.key.into_bytes()));
         frame.push_bulk(self.value);
         if let Some(ms) = self.expire {
@@ -153,9 +154,9 @@ impl Set {
             // We the second option because it allows greater precision and
             // src/bin/cli.rs parses the expiration argument as milliseconds
             // in duration_from_ms_str()
-            frame.push_bulk(Bytes::from("px".as_bytes()));
-            frame.push_int(ms.as_millis() as u64);
+            frame.push_bulk(Bytes::from_static(b"px"));
+            frame.push_int(ms.as_millis() as i64);
         }
-        frame
+        Frame::Array(frame)
     }
 }

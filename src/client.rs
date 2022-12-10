@@ -117,7 +117,7 @@ impl Client {
         self.connection.write_frame(&frame).await?;
 
         match self.read_response().await? {
-            Frame::Simple(value) => Ok(value.into()),
+            Frame::Simple(value) => Ok(value),
             Frame::Bulk(value) => Ok(value),
             frame => Err(frame.to_error()),
         }
@@ -158,7 +158,7 @@ impl Client {
         // Both `Simple` and `Bulk` frames are accepted. `Null` represents the
         // key not being present and `None` is returned.
         match self.read_response().await? {
-            Frame::Simple(value) => Ok(Some(value.into())),
+            Frame::Simple(value) => Ok(Some(value)),
             Frame::Bulk(value) => Ok(Some(value)),
             Frame::Null => Ok(None),
             frame => Err(frame.to_error()),
@@ -293,7 +293,7 @@ impl Client {
     /// }
     /// ```
     #[instrument(skip(self))]
-    pub async fn publish(&mut self, channel: &str, message: Bytes) -> crate::Result<u64> {
+    pub async fn publish(&mut self, channel: &str, message: Bytes) -> crate::Result<i64> {
         // Convert the `Publish` command into a frame
         let frame = Publish::new(channel, message).into_frame();
 
@@ -359,10 +359,15 @@ impl Client {
                     // num-subscribed is the number of channels that the client
                     // is currently subscribed to.
                     [subscribe, schannel, ..]
-                        if *subscribe == "subscribe" && *schannel == channel => {}
-                    _ => return Err(response.to_error()),
+                        if subscribe == "subscribe" && schannel == channel => {}
+                    _ => {
+                        return Err(format!(
+                            "subscribe command returned a response with bad format"
+                        )
+                        .into())
+                    }
                 },
-                frame => return Err(frame.to_error()),
+                frame => return Err(format!("did not expect to get {}", frame.as_name()).into()),
             };
         }
 
@@ -379,7 +384,7 @@ impl Client {
 
         match response {
             // Error frames are converted to `Err`
-            Some(Frame::Error(msg)) => Err(msg.into()),
+            Some(Frame::Error(msg)) => Err(std::str::from_utf8(msg.as_ref())?.into()),
             Some(frame) => Ok(frame),
             None => {
                 // Receiving `None` here indicates the server has closed the
@@ -410,13 +415,13 @@ impl Subscriber {
 
                 match mframe {
                     Frame::Array(ref frame) => match frame.as_slice() {
-                        [message, channel, content] if *message == "message" => Ok(Some(Message {
+                        [message, channel, content] if message == "message" => Ok(Some(Message {
                             channel: channel.to_string(),
                             content: Bytes::from(content.to_string()),
                         })),
-                        _ => Err(mframe.to_error()),
+                        _ => Err(format!("did not expect to get {}", mframe.as_name()).into()),
                     },
-                    frame => Err(frame.to_error()),
+                    frame => Err(format!("did not expect to get {}", frame.as_name()).into()),
                 }
             }
             None => Ok(None),
@@ -481,7 +486,7 @@ impl Subscriber {
 
             match response {
                 Frame::Array(ref frame) => match frame.as_slice() {
-                    [unsubscribe, channel, ..] if *unsubscribe == "unsubscribe" => {
+                    [unsubscribe, channel, ..] if unsubscribe == "unsubscribe" => {
                         let len = self.subscribed_channels.len();
 
                         if len == 0 {
@@ -490,7 +495,7 @@ impl Subscriber {
                         }
 
                         // unsubscribed channel should exist in the subscribed list at this point
-                        self.subscribed_channels.retain(|c| *channel != &c[..]);
+                        self.subscribed_channels.retain(|c| channel != &c[..]);
 
                         // Only a single channel should be removed from the
                         // list of subscribed channels.

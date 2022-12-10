@@ -27,10 +27,8 @@ impl Unknown {
     /// This usually means the command is not yet implemented by `mini-redis`.
     #[instrument(skip(self, dst))]
     pub(crate) async fn apply(self, dst: &mut Connection) -> crate::Result<()> {
-        let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name));
-
+        let response = Frame::Error(format!("ERR unknown command '{}'", self.command_name).into());
         debug!(?response);
-
         dst.write_frame(&response).await?;
         Ok(())
     }
