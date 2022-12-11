@@ -35,7 +35,8 @@ impl Parse {
     /// Returns `Err` if `frame` is not an array frame.
     pub(crate) fn new(frame: Frame) -> Result<Parse, ParseError> {
         let array = match frame {
-            Frame::Array(array) => array,
+            Frame::Array(arr) => arr,
+            Frame::Simple(s) => vec![Frame::Simple(s)],
             frame => return Err(format!("protocol error; expected array, got {:?}", frame).into()),
         };
 
