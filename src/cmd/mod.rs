@@ -13,6 +13,9 @@ pub use subscribe::{Subscribe, Unsubscribe};
 mod ping;
 pub use ping::Ping;
 
+mod config;
+pub use config::Config;
+
 mod unknown;
 pub use unknown::Unknown;
 
@@ -30,6 +33,7 @@ pub enum Command {
     Unsubscribe(Unsubscribe),
     Ping(Ping),
     Unknown(Unknown),
+    Config(Config),
 }
 
 impl Command {
@@ -63,6 +67,7 @@ impl Command {
             "subscribe" => Command::Subscribe(Subscribe::parse_frames(&mut parse)?),
             "unsubscribe" => Command::Unsubscribe(Unsubscribe::parse_frames(&mut parse)?),
             "ping" => Command::Ping(Ping::parse_frames(&mut parse)?),
+            "config" => Command::Config(Config::parse_frames(&mut parse)?),
             _ => {
                 // The command is not recognized and an Unknown command is
                 // returned.
