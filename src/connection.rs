@@ -1,4 +1,4 @@
-use crate::frame::{self, Frame};
+use crate::frame::{Error as FrameError, Frame};
 
 use bytes::{Buf, BytesMut};
 use std::io::{self, Cursor};
@@ -85,8 +85,6 @@ impl Connection {
     /// enough data has been buffered yet, `Ok(None)` is returned. If the
     /// buffered data does not represent a valid frame, `Err` is returned.
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
-        use frame::Error::Incomplete;
-
         // Cursor is used to track the "current" location in the
         // buffer. Cursor also implements `Buf` from the `bytes` crate
         // which provides a number of helpful utilities for working
@@ -98,6 +96,7 @@ impl Connection {
         // parse of the frame, and allows us to skip allocating data structures
         // to hold the frame data unless we know the full frame has been
         // received.
+
         match Frame::check(&mut buf) {
             Ok(_) => {
                 // The `check` function will have advanced the cursor until the
@@ -137,7 +136,7 @@ impl Connection {
             //
             // We do not want to return `Err` from here as this "error" is an
             // expected runtime condition.
-            Err(Incomplete) => Ok(None),
+            Err(FrameError::Incomplete) => Ok(None),
             // An error was encountered while parsing the frame. The connection
             // is now in an invalid state. Returning `Err` from here will result
             // in the connection being closed.

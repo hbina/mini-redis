@@ -98,14 +98,18 @@ impl Frame {
 
                 Ok(())
             }
-            actual => Err(format!("protocol error; invalid frame type byte `{}`", actual).into()),
+            _ => {
+                get_line(src)?;
+                Ok(())
+            }
         }
     }
 
     /// The message has already been validated with `check`.
     pub fn parse(src: &mut Cursor<&[u8]>) -> Result<Frame, Error> {
-        match get_u8(src)? {
+        match peek_u8(src)? {
             b'+' => {
+                skip(src, 1)?;
                 // Read the line and convert it to `Vec<u8>`
                 let line = get_line(src)?.to_vec();
 
@@ -115,6 +119,7 @@ impl Frame {
                 Ok(Frame::Simple(string))
             }
             b'-' => {
+                skip(src, 1)?;
                 // Read the line and convert it to `Vec<u8>`
                 let line = get_line(src)?.to_vec();
 
@@ -124,10 +129,12 @@ impl Frame {
                 Ok(Frame::Error(string))
             }
             b':' => {
+                skip(src, 1)?;
                 let len = get_decimal(src)?;
                 Ok(Frame::Integer(len))
             }
             b'$' => {
+                skip(src, 1)?;
                 if b'-' == peek_u8(src)? {
                     let line = get_line(src)?;
 
@@ -154,6 +161,7 @@ impl Frame {
                 }
             }
             b'*' => {
+                skip(src, 1)?;
                 let len = get_decimal(src)?.try_into()?;
                 let mut out = Vec::with_capacity(len);
 
@@ -163,7 +171,15 @@ impl Frame {
 
                 Ok(Frame::Array(out))
             }
-            _ => unimplemented!(),
+            _ => {
+                // Read the line and convert it to `Vec<u8>`
+                let line = get_line(src)?.to_vec();
+
+                // Convert the line to a String
+                let string = String::from_utf8(line)?;
+
+                Ok(Frame::Simple(string))
+            }
         }
     }
 
