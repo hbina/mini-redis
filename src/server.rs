@@ -23,7 +23,7 @@ struct Listener {
     ///
     /// This holds a wrapper around an `Arc`. The internal `Db` can be
     /// retrieved and passed into the per connection state (`Handler`).
-    db_holder: DbDropGuard,
+    db_holder: Vec<DbDropGuard>,
 
     /// TCP listener supplied by the `run` caller.
     listener: TcpListener,
@@ -133,7 +133,7 @@ pub async fn run(listener: TcpListener, shutdown: impl Future) {
     // Initialize the listener state
     let mut server = Listener {
         listener,
-        db_holder: DbDropGuard::new(),
+        db_holder: (0..20).map(|_| DbDropGuard::new()).collect::<Vec<_>>(),
         limit_connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         notify_shutdown,
         shutdown_complete_tx,
@@ -243,7 +243,11 @@ impl Listener {
             // Create the necessary per-connection handler state.
             let mut handler = Handler {
                 // Get a handle to the shared database.
-                db: self.db_holder.db(),
+                db: self
+                    .db_holder
+                    .get(0)
+                    .expect("the 0th database should always be initialized")
+                    .db(),
 
                 // Initialize the connection state. This allocates read/write
                 // buffers to perform redis protocol frame parsing.
